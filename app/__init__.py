@@ -5,20 +5,41 @@ from flask_swagger_ui import get_swaggerui_blueprint
 
 from .extensions import db, migrate, ma
 
+
 def create_app(config_object=None):
+    """
+    config_object can be:
+      - a dict (tests pass overrides like TESTING + SQLite URI)
+      - a string import path, e.g. "app.config.DevelopmentConfig"
+      - a config class
+    If nothing provided, we try APP_CONFIG env var, else default to DevelopmentConfig.
+    """
     app = Flask(__name__)
     app.url_map.strict_slashes = False
 
-    # Allow: explicit class passed in, or APP_CONFIG="app.config.ProductionConfig",
-    # or default to DevelopmentConfig.
     cfg = config_object or os.getenv("APP_CONFIG") or "app.config.DevelopmentConfig"
-    if isinstance(cfg, str):
+
+    if isinstance(cfg, dict):
+        # Only safe minimal defaults, then apply test overrides
+        app.config.update(
+            {
+                "SECRET_KEY": os.getenv("SECRET_KEY", "fallback_dev_secret"),
+                "SQLALCHEMY_TRACK_MODIFICATIONS": False,
+            }
+        )
         app.config.update(cfg)
+    elif isinstance(cfg, str):
+        # String path to a config class (e.g., "app.config.DevelopmentConfig")
+        app.config.from_object(cfg)
     else:
+        # A config class object
         app.config.from_object(cfg)
 
-    # Final fallback to avoid KeyError locally
-    app.config["SECRET_KEY"] = app.config.get("SECRET_KEY") or os.getenv("SECRET_KEY", "fallback_dev_secret")
+    # Final fallbacks & JWT settings (encode/decode will both use these)
+    app.config.setdefault("SECRET_KEY", os.getenv("SECRET_KEY", "fallback_dev_secret"))
+    app.config.setdefault("JWT_SECRET", app.config["SECRET_KEY"])
+    app.config.setdefault("JWT_ALGO", "HS256")
+    app.config.setdefault("SQLALCHEMY_TRACK_MODIFICATIONS", False)
 
     # --- init extensions ---
     db.init_app(app)
@@ -35,23 +56,25 @@ def create_app(config_object=None):
     )
     app.register_blueprint(swaggerui_bp, url_prefix=SWAGGER_URL)
 
-    # swagger.json endpoint
+    # swagger.json endpoint (dynamic host/scheme so it works locally and behind proxies)
     from app.swagger import swagger_spec
+
     @app.route("/swagger.json")
     def swagger_json():
-        spec = dict(swagger_spec)  # make a copy
+        spec = dict(swagger_spec)  # copy
         spec["host"] = request.headers.get("X-Forwarded-Host", request.host)
-        spec["schemes"] = [request.headers.get("X-Forwarded-Proto", "https")]
+        spec["schemes"] = [request.headers.get("X-Forwarded-Proto", "http")]
         return jsonify(spec)
 
-    # --- health check (handy for Render) ---
+    # Simple healthcheck + root redirect to docs
     @app.get("/health")
     def health():
-        return jsonify(status= "ok")
+        return jsonify(status="ok")
 
     @app.get("/")
     def index():
         return redirect("/docs", code=302)
+
     # --- Blueprints ---
     from .blueprints.customers.routes import customers_bp
     from .blueprints.Inventory.routes import inventory_bp
