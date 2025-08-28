@@ -13,7 +13,7 @@ def create_app(config_object=None):
     # or default to DevelopmentConfig.
     cfg = config_object or os.getenv("APP_CONFIG") or "app.config.DevelopmentConfig"
     if isinstance(cfg, str):
-        app.config.from_object(cfg)
+        app.config.update(cfg)
     else:
         app.config.from_object(cfg)
 
