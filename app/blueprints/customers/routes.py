@@ -1,5 +1,7 @@
 # app/blueprints/customers/routes.py
 from flask import Blueprint, request, jsonify
+from sqlalchemy.exc import IntegrityError
+from marshmallow import ValidationError
 from app.extensions import db, limiter
 from app.models import Customer
 from .schemas import CustomerSchema
@@ -20,14 +22,22 @@ def list_customers():
 @customers_bp.post("/")
 @limiter.limit("10 per minute")
 def create_customer():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        customer_schema.load(data, session=db.session)
+    except ValidationError as err:
+        return jsonify(err.messages), 400
     # load via marshmallow (will validate)
     customer = customer_schema.load(data, session=db.session)
     # set password if provided
     if "password" in data and data["password"]:
         customer.set_password(data["password"])
-    db.session.add(customer)
-    db.session.commit()
+    try:
+        db.session.add(customer)
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "Email already exists"}), 400
     return jsonify(customer_schema.dump(customer)), 201
 
 # GET /customers/<id>
