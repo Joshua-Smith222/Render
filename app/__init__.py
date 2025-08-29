@@ -1,5 +1,6 @@
 # app/__init__.py
 import os
+import logging
 from flask import Flask, jsonify, request, redirect
 from flask_swagger_ui import get_swaggerui_blueprint
 from flask_cors import CORS
@@ -15,10 +16,18 @@ from alembic.config import Config as AlembicConfig
 from alembic.util.exc import CommandError
 
 
-def _alembic_upgrade_head(app: Flask):
+def _alembic_upgrade_head_safely() -> bool:
     """Run Alembic upgrade to head using the programmatic API."""
     # migrations dir is a sibling of app/
-    fm_upgrade()
+    try:
+        fm_upgrade()
+        return True
+    except CommandError as ce:
+        current_app.logger.warning("Alembic CommandError: %s", ce)
+        return False
+    except BaseException as be:
+        current_app.logger.error("Alembic unexpected error: %s", be)
+        return False
 
 def _auto_migrate(app: Flask) -> None:
     """
@@ -27,45 +36,54 @@ def _auto_migrate(app: Flask) -> None:
     - Try upgrade -> if 'Can't locate revision' occurs, drop alembic_version and retry
     - Never crash the process; only log errors
     """
-    with app.app_context():
-        uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
-        if not uri.startswith("postgresql"):
+    if os.getenv("AUTO_MIGRATE", "1") != "1":
+        app.logger.info("AUTO_MIGRATE=0; skipping auto-migrate.")
+        return
+
+    uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+    if not uri.startswith("postgresql"):
             app.logger.info("Auto-migrate skipped (non-Postgres URI).")
             return
-
-        engine = db.engine
-        insp = inspect(engine)
-        with engine.begin() as conn:
+    try:
+            engine = db.engine
+            insp = inspect(engine)
+            with engine.begin() as conn:
+                try:
             # single-run guard
-            conn.execute(text("SELECT pg_advisory_lock(91199001)"))
-            try:
+                 conn.execute(text("SELECT pg_advisory_lock(91199001)"))
+                except Exception:
+                    app.logger.info("Advisory lock not available; skipping auto-migrate.")
+
+
                 try:
                     app.logger.info("Running Alembic upgrade (programmatic)...")
-                    _alembic_upgrade_head(app)
-                    app.logger.info("Alembic upgrade complete.")
-                except CommandError as err:
-                    msg = str(err)
-                    app.logger.warning("Alembic upgrade failed: %s", msg)
-                    if "Can't locate revision identified by" in msg or "No such revision" in msg:
-                        app.logger.warning("Resetting alembic_version and retrying upgrade...")
-                        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
-                        _alembic_upgrade_head(app)
-                        app.logger.info("Alembic upgrade succeeded after resetting alembic_version.")
-                    else:
-                        app.logger.error("Alembic error (not auto-fixable): %s", msg)
-                except Exception as err:  # safety net
-                    app.logger.error("Unexpected migration error: %s", err)
+                    if not _alembic_upgrade_head_safely():
+                        app.logger.warning("Resseting alembic_version and retrying upgrade...")
+                        try:
+                            conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
-                if not insp.has_table("customer"):
-                    app.logger.info("No core tables found. Bootstrapping schema via create_all().")
-                    db.create_all()
-                    try:
-                        fm_stamp()
-                        app.logger.info("Stamped alembic head after create_all().")
-                    except Exception as e:
-                        app.logger.warning("Could not stamp alembic head after create_all(): %s", e)
-            finally:
+                        except Exception as e:
+                            app.logger.warning("Could not drop alembic_version: %s", e)
+                        _alembic_upgrade_head_safely()
+                    if not insp.has_table("customer"):
+                        app.logger.info("No core tables found. Bootstrapping schema via create_all().")
+                        try:
+                            db.create_all()
+                        except Exception as e:
+                            app.logger.error("create_all() failed: %s", e)
+                        try:
+                            fm_stamp()
+                            app.logger.info("Stamped alembic head after create_all().")
+                        except BaseException as e:
+                            app.logger.warning("Could not stamp alembic head after create_all(): %s", e)
+
+    finally:
+            try:
                 conn.execute(text("SELECT pg_advisory_unlock(91199001)"))
+            except Exception:
+                pass
+            except BaseException as e:
+                app.logger.error("Auto-migrate outer error (ignored): %s", e)
 
 
 def create_app(config_object=None):
