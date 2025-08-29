@@ -2,9 +2,52 @@
 import os
 from flask import Flask, jsonify, request, redirect
 from flask_swagger_ui import get_swaggerui_blueprint
+from sqlalchemy import text
 
 from .extensions import db, migrate, ma
 from flask_cors import CORS
+
+# Only import here to avoid circulars at module import time
+from flask_migrate import upgrade as alembic_upgrade
+
+
+def _auto_migrate(app: Flask) -> None:
+    """
+    Run Alembic upgrade at startup. If the database points at a missing
+    revision (e.g., stale alembic_version), drop that table and retry.
+    Uses a Postgres advisory lock so only one worker performs the work.
+    Skips entirely for SQLite/dev/test.
+    """
+    with app.app_context():
+        uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+        # Only do this on Postgres; SQLite and tests don't need it and may break.
+        if not uri.startswith("postgresql"):
+            app.logger.info("Auto-migrate skipped (non-Postgres URI).")
+            return
+
+        engine = db.engine
+
+        def do_upgrade():
+            alembic_upgrade()  # to head
+
+        # Single-run guard so only one Gunicorn worker migrates
+        with engine.begin() as conn:
+            conn.execute(text("SELECT pg_advisory_lock(91199001)"))
+            try:
+                try:
+                    app.logger.info("Running Alembic upgrade...")
+                    do_upgrade()
+                    app.logger.info("Alembic upgrade complete.")
+                except Exception as err:
+                    app.logger.warning(
+                        "Alembic upgrade failed (%s). Dropping alembic_version and retrying...",
+                        err,
+                    )
+                    conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+                    do_upgrade()
+                    app.logger.info("Alembic upgrade succeeded after resetting alembic_version.")
+            finally:
+                conn.execute(text("SELECT pg_advisory_unlock(91199001)"))
 
 
 def create_app(config_object=None):
@@ -18,12 +61,17 @@ def create_app(config_object=None):
     app = Flask(__name__)
     app.url_map.strict_slashes = False
 
-    CORS(app, resources={r"/*": {"origins": "*"}}, expose_headers=["Location"], supports_credentials=False)
+    CORS(
+        app,
+        resources={r"/*": {"origins": "*"}},
+        expose_headers=["Location"],
+        supports_credentials=False,
+    )
 
     cfg = config_object or os.getenv("APP_CONFIG") or "app.config.DevelopmentConfig"
 
     if isinstance(cfg, dict):
-        # Only safe minimal defaults, then apply test overrides
+        # Minimal safe defaults, then apply test overrides
         app.config.update(
             {
                 "SECRET_KEY": os.getenv("SECRET_KEY", "fallback_dev_secret"),
@@ -32,13 +80,11 @@ def create_app(config_object=None):
         )
         app.config.update(cfg)
     elif isinstance(cfg, str):
-        # String path to a config class (e.g., "app.config.DevelopmentConfig")
         app.config.from_object(cfg)
     else:
-        # A config class object
         app.config.from_object(cfg)
 
-    # Final fallbacks & JWT settings (encode/decode will both use these)
+    # Final fallbacks & JWT settings
     app.config.setdefault("SECRET_KEY", os.getenv("SECRET_KEY", "fallback_dev_secret"))
     app.config.setdefault("JWT_SECRET", app.config["SECRET_KEY"])
     app.config.setdefault("JWT_ALGO", "HS256")
@@ -97,5 +143,15 @@ def create_app(config_object=None):
     app.register_blueprint(customer_ticket_bp, url_prefix="/customer")
     app.register_blueprint(mechanic_ticket_bp, url_prefix="/mechanic")
     app.register_blueprint(auth_bp)
+
+    # --- Auto-migrate on startup (Postgres only) ---
+    # Keep your Render Start Command SIMPLE:
+    #   gunicorn "app:create_app()" --bind 0.0.0.0:$PORT
+    # This function will handle the migration safely.
+    try:
+        _auto_migrate(app)
+    except Exception as e:
+        # If something goes wrong, log but don't prevent the app from starting.
+        app.logger.error("Auto-migrate failed at startup: %s", e)
 
     return app
