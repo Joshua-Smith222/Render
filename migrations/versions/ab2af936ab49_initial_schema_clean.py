@@ -1,8 +1,8 @@
-"""initial schema (fresh)
+"""initial schema (clean)
 
-Revision ID: 5e3804aff328
-Revises:
-Create Date: 2025-08-29 00:44:26.101169
+Revision ID: ab2af936ab49
+Revises: 
+Create Date: 2025-08-29 04:06:08.735558
 
 """
 from alembic import op
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '5e3804aff328'
-down_revision = 'e42b21bb6c94'
+revision = 'ab2af936ab49'
+down_revision = None
 branch_labels = None
 depends_on = None
 
@@ -42,6 +42,7 @@ def upgrade():
     sa.Column('phone', sa.String(length=20), nullable=True),
     sa.Column('address', sa.String(length=200), nullable=True),
     sa.Column('salary', sa.Numeric(precision=10, scale=2), nullable=True),
+    sa.Column('password_hash', sa.String(length=512), nullable=False),
     sa.PrimaryKeyConstraint('mechanic_id')
     )
     op.create_table('vehicle',

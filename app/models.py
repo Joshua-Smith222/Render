@@ -48,7 +48,7 @@ class Mechanic(db.Model):
     phone       = db.Column(db.String(20))
     address     = db.Column(db.String(200))
     salary      = db.Column(db.Numeric(10,2))
-    password_hash = db.Column(db.String(512), nullable=True)
+    password_hash = db.Column(db.String(512), nullable=False, default="")
 
 
     # M↔M via ServiceAssignment
