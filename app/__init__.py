@@ -3,7 +3,9 @@ import os
 from flask import Flask, jsonify, request, redirect
 from flask_swagger_ui import get_swaggerui_blueprint
 from flask_cors import CORS
-from sqlalchemy import text
+from sqlalchemy import text, inspect
+from flask_migrate import upgrade as fm_upgrade, stamp as fm_stamp
+
 
 from .extensions import db, migrate, ma
 
@@ -16,12 +18,7 @@ from alembic.util.exc import CommandError
 def _alembic_upgrade_head(app: Flask):
     """Run Alembic upgrade to head using the programmatic API."""
     # migrations dir is a sibling of app/
-    migrations_path = os.path.abspath(os.path.join(app.root_path, os.pardir, "migrations"))
-    cfg = AlembicConfig()
-    cfg.set_main_option("script_location", migrations_path)
-    cfg.set_main_option("sqlalchemy.url", app.config["SQLALCHEMY_DATABASE_URI"])
-    alembic_cmd.upgrade(cfg, "head")
-
+    fm_upgrade()
 
 def _auto_migrate(app: Flask) -> None:
     """
@@ -37,6 +34,7 @@ def _auto_migrate(app: Flask) -> None:
             return
 
         engine = db.engine
+        insp = inspect(engine)
         with engine.begin() as conn:
             # single-run guard
             conn.execute(text("SELECT pg_advisory_lock(91199001)"))
@@ -57,6 +55,15 @@ def _auto_migrate(app: Flask) -> None:
                         app.logger.error("Alembic error (not auto-fixable): %s", msg)
                 except Exception as err:  # safety net
                     app.logger.error("Unexpected migration error: %s", err)
+
+                if not insp.has_table("customer"):
+                    app.logger.info("No core tables found. Bootstrapping schema via create_all().")
+                    db.create_all()
+                    try:
+                        fm_stamp()
+                        app.logger.info("Stamped alembic head after create_all().")
+                    except Exception as e:
+                        app.logger.warning("Could not stamp alembic head after create_all(): %s", e)
             finally:
                 conn.execute(text("SELECT pg_advisory_unlock(91199001)"))
 
