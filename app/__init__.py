@@ -2,50 +2,61 @@
 import os
 from flask import Flask, jsonify, request, redirect
 from flask_swagger_ui import get_swaggerui_blueprint
+from flask_cors import CORS
 from sqlalchemy import text
 
 from .extensions import db, migrate, ma
-from flask_cors import CORS
 
-# Only import here to avoid circulars at module import time
-from flask_migrate import upgrade as alembic_upgrade
+# Alembic (programmatic API, avoids sys.exit)
+from alembic import command as alembic_cmd
+from alembic.config import Config as AlembicConfig
+from alembic.util.exc import CommandError
+
+
+def _alembic_upgrade_head(app: Flask):
+    """Run Alembic upgrade to head using the programmatic API."""
+    # migrations dir is a sibling of app/
+    migrations_path = os.path.abspath(os.path.join(app.root_path, os.pardir, "migrations"))
+    cfg = AlembicConfig()
+    cfg.set_main_option("script_location", migrations_path)
+    cfg.set_main_option("sqlalchemy.url", app.config["SQLALCHEMY_DATABASE_URI"])
+    alembic_cmd.upgrade(cfg, "head")
 
 
 def _auto_migrate(app: Flask) -> None:
     """
-    Run Alembic upgrade at startup. If the database points at a missing
-    revision (e.g., stale alembic_version), drop that table and retry.
-    Uses a Postgres advisory lock so only one worker performs the work.
-    Skips entirely for SQLite/dev/test.
+    On Postgres only:
+    - Take an advisory lock so only one worker migrates
+    - Try upgrade -> if 'Can't locate revision' occurs, drop alembic_version and retry
+    - Never crash the process; only log errors
     """
     with app.app_context():
         uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
-        # Only do this on Postgres; SQLite and tests don't need it and may break.
         if not uri.startswith("postgresql"):
             app.logger.info("Auto-migrate skipped (non-Postgres URI).")
             return
 
         engine = db.engine
-
-        def do_upgrade():
-            alembic_upgrade()  # to head
-
-        # Single-run guard so only one Gunicorn worker migrates
         with engine.begin() as conn:
+            # single-run guard
             conn.execute(text("SELECT pg_advisory_lock(91199001)"))
             try:
                 try:
-                    app.logger.info("Running Alembic upgrade...")
-                    do_upgrade()
+                    app.logger.info("Running Alembic upgrade (programmatic)...")
+                    _alembic_upgrade_head(app)
                     app.logger.info("Alembic upgrade complete.")
-                except Exception as err:
-                    app.logger.warning(
-                        "Alembic upgrade failed (%s). Dropping alembic_version and retrying...",
-                        err,
-                    )
-                    conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
-                    do_upgrade()
-                    app.logger.info("Alembic upgrade succeeded after resetting alembic_version.")
+                except CommandError as err:
+                    msg = str(err)
+                    app.logger.warning("Alembic upgrade failed: %s", msg)
+                    if "Can't locate revision identified by" in msg or "No such revision" in msg:
+                        app.logger.warning("Resetting alembic_version and retrying upgrade...")
+                        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+                        _alembic_upgrade_head(app)
+                        app.logger.info("Alembic upgrade succeeded after resetting alembic_version.")
+                    else:
+                        app.logger.error("Alembic error (not auto-fixable): %s", msg)
+                except Exception as err:  # safety net
+                    app.logger.error("Unexpected migration error: %s", err)
             finally:
                 conn.execute(text("SELECT pg_advisory_unlock(91199001)"))
 
@@ -71,7 +82,6 @@ def create_app(config_object=None):
     cfg = config_object or os.getenv("APP_CONFIG") or "app.config.DevelopmentConfig"
 
     if isinstance(cfg, dict):
-        # Minimal safe defaults, then apply test overrides
         app.config.update(
             {
                 "SECRET_KEY": os.getenv("SECRET_KEY", "fallback_dev_secret"),
@@ -92,7 +102,7 @@ def create_app(config_object=None):
 
     # --- init extensions ---
     db.init_app(app)
-    from app import models  # noqa: F401 (register models with SQLAlchemy)
+    from app import models  # noqa: F401
     migrate.init_app(app, db)
     ma.init_app(app)
 
@@ -144,14 +154,10 @@ def create_app(config_object=None):
     app.register_blueprint(mechanic_ticket_bp, url_prefix="/mechanic")
     app.register_blueprint(auth_bp)
 
-    # --- Auto-migrate on startup (Postgres only) ---
-    # Keep your Render Start Command SIMPLE:
-    #   gunicorn "app:create_app()" --bind 0.0.0.0:$PORT
-    # This function will handle the migration safely.
+    # --- Auto-migrate on startup (Postgres only, non-fatal) ---
     try:
         _auto_migrate(app)
     except Exception as e:
-        # If something goes wrong, log but don't prevent the app from starting.
-        app.logger.error("Auto-migrate failed at startup: %s", e)
+        app.logger.error("Auto-migrate failed at startup (ignored): %s", e)
 
     return app
