@@ -7,7 +7,7 @@ swagger_spec = {
     "description": "CRUD for customers, mechanics, inventory, service tickets + auth, rate-limits, and caching."
   },
   "basePath": "/",
-  "schemes": ["http", "https"],
+  "schemes": ["https"],
   "consumes": ["application/json"],
   "produces": ["application/json"],
 
