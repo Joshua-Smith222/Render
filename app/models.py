@@ -48,11 +48,18 @@ class Mechanic(db.Model):
     phone       = db.Column(db.String(20))
     address     = db.Column(db.String(200))
     salary      = db.Column(db.Numeric(10,2))
+    password_hash = db.Column(db.String(512), nullable=True)
+
 
     # M↔M via ServiceAssignment
     assignments = db.relationship(
         'ServiceAssignment', back_populates='mechanic', cascade='all, delete-orphan'
     )
+    def set_password(self, password: str):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password: str) -> bool:
+        return bool(self.password_hash) and check_password_hash(self.password_hash, password)
 
 class ServiceTicket(db.Model):
     __tablename__ = 'service_ticket'
