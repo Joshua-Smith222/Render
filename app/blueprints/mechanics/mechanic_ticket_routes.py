@@ -9,7 +9,7 @@ ticket_schema = ServiceTicketSchema()
 tickets_schema = ServiceTicketSchema(many=True)
 
 @mechanic_ticket_bp.route('/my-assigned-tickets', methods=['GET'])
-@token_required
+@token_required()
 def get_my_assigned_tickets(mechanic_id):
     assignments = ServiceAssignment.query.filter_by(mechanic_id=mechanic_id).all()
     tickets = [assignment.ticket for assignment in assignments]

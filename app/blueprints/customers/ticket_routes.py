@@ -8,7 +8,7 @@ customer_ticket_bp = Blueprint('customer_tickets', __name__)
 tickets_schema = ServiceTicketSchema(many=True)
 
 @customer_ticket_bp.route('/my-tickets', methods=['GET'])
-@token_required
+@token_required()
 def get_my_tickets(customer_id):
     vehicles = Vehicle.query.filter_by(customer_id=customer_id).all()
     vins = [v.vin for v in vehicles]

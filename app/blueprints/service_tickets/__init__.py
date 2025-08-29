@@ -3,5 +3,5 @@ from flask import Blueprint
 
 tickets_bp = Blueprint('service_tickets', __name__)
 
-from .routes import *
+from .routes import tickets_bp
 from .schemas import *

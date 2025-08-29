@@ -11,7 +11,7 @@ tickets_schema = ServiceTicketSchema(many=True)
 
 # POST /service_tickets/  (auth required) -> 201
 @tickets_bp.post("/")
-@token_required
+@token_required()
 def create_ticket(current_customer_id):
     data = request.get_json() or {}
     data.setdefault("customer_id", current_customer_id)
@@ -29,14 +29,14 @@ def create_ticket(current_customer_id):
 
 # GET /service_tickets/ (auth required) -> 200
 @tickets_bp.get("/")
-@token_required
+@token_required()
 def list_tickets(_current_customer_id):
     allt = ServiceTicket.query.all()
     return jsonify(tickets_schema.dump(allt)), 200
 
 # GET /service_tickets/<id> (auth required) -> 200
 @tickets_bp.get("/<int:ticket_id>")
-@token_required
+@token_required()
 def get_ticket(current_user, ticket_id):
     t = ServiceTicket.query.get_or_404(ticket_id)
     return jsonify(ticket_schema.dump(t)), 200
@@ -44,7 +44,7 @@ def get_ticket(current_user, ticket_id):
 # PUT /service_tickets/<id> (auth required) -> 200
 # Supports add/remove mechanic IDs in the same payload if your tests send them.
 @tickets_bp.put("/<int:ticket_id>")
-@token_required
+@token_required()
 def update_ticket(current_user, ticket_id):
     t = ServiceTicket.query.get_or_404(ticket_id)
     data = (request.get_json() or {}).copy()
@@ -72,7 +72,7 @@ def update_ticket(current_user, ticket_id):
 # POST /service_tickets/<id>/assign (auth required) -> 200
 # Tests send {"mechanic_ids": [], "inventory_ids": []}
 @tickets_bp.post("/<int:ticket_id>/assign")
-@token_required
+@token_required()
 def assign(current_user, ticket_id):
     t = ServiceTicket.query.get_or_404(ticket_id)
     data = request.get_json() or {}
@@ -98,7 +98,7 @@ def assign(current_user, ticket_id):
 
 # DELETE /service_tickets/<id> (auth required) -> 204
 @tickets_bp.delete("/<int:ticket_id>")
-@token_required
+@token_required()
 def delete_ticket(current_user, ticket_id):
     t = ServiceTicket.query.get_or_404(ticket_id)
     db.session.delete(t)

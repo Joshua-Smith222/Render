@@ -1,57 +1,74 @@
-# app/utils/jwt_utils.py
-from datetime import datetime, timedelta, UTC
+# app/utils/token.py
+from datetime import datetime, timedelta, timezone
 from functools import wraps
-
-from flask import current_app, request, jsonify
-from jose import jwt, JWTError
-
-
-ALGORITHM = "HS256"
-EXPIRE_MINUTES = 60
-
+from flask import current_app, request, jsonify, g
+import inspect
+import jwt
 
 def _jwt_secret():
-    """
-    Single source of truth for the signing key.
-    We prefer JWT_SECRET, else SECRET_KEY.
-    create_app() already sets JWT_SECRET = SECRET_KEY by default.
-    """
-    return current_app.config.get("JWT_SECRET") or current_app.config["SECRET_KEY"]
+    return current_app.config.get("JWT_SECRET", current_app.config["SECRET_KEY"])
 
+def _jwt_algo():
+    return current_app.config.get("JWT_ALGO", "HS256")
 
-def encode_token(customer_id: int | str) -> str:
+def generate_token(sub: str, role: str = "customer", expires_in: int = 24 * 3600) -> str:
     payload = {
-        "sub": str(customer_id),
-        "exp": datetime.now(UTC) + timedelta(minutes=EXPIRE_MINUTES),
+        "sub": str(sub),
+        "role": role,
+        "exp": datetime.now(timezone.utc) + timedelta(seconds=expires_in),
     }
-    return jwt.encode(payload, _jwt_secret(), algorithm=ALGORITHM)
+    return jwt.encode(payload, _jwt_secret(), algorithm=_jwt_algo())
 
+def decode_token(token: str) -> dict:
+    return jwt.decode(token, _jwt_secret(), algorithms=[_jwt_algo()])
 
-def decode_token(token: str) -> str | None:
-    try:
-        payload = jwt.decode(token, _jwt_secret(), algorithms=[ALGORITHM])
-        return payload.get("sub")
-    except JWTError:
-        return None
-
-
-def token_required(f):
+def token_required(role: str | None = None):
     """
-    Decorator to require a valid token for accessing a route.
-    Injects `customer_id` as the first arg to the view if valid.
+    @token_required()                # validates any role
+    @token_required("mechanic")      # restricts to mechanics
     """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization") or ""
-        parts = auth_header.split()
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            auth = request.headers.get("Authorization", "")
+            parts = auth.split()
+            if len(parts) != 2 or parts[0].lower() != "bearer":
+                return jsonify(error="Missing or invalid Authorization header"), 401
 
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            return jsonify({"error": "Authorization header missing or invalid"}), 401
+            try:
+                payload = decode_token(parts[1])
+            except jwt.ExpiredSignatureError:
+                return jsonify(error="Token expired"), 401
+            except jwt.InvalidTokenError:
+                return jsonify(error="Invalid token"), 401
 
-        customer_id = decode_token(parts[1])
-        if not customer_id:
-            return jsonify({"error": "Invalid token"}), 401
+            if role and payload.get("role") != role:
+                return jsonify(error="Forbidden"), 403
 
-        return f(customer_id, *args, **kwargs)
+            # Stash on g for any route to read
+            sub = payload.get("sub")
+            if sub is None:
+                return jsonify(error="Invalid token: missing sub"), 401
 
-    return decorated
+            g.jwt = payload
+            g.current_user_id = int(sub)
+            if payload.get("role") == "mechanic":
+                g.current_mechanic_id = int(sub)
+            else:
+                g.current_customer_id = int(sub)
+
+            # Only inject kwargs the view actually declares
+            params = set(inspect.signature(fn).parameters.keys())
+            # Always support a generic 'current_user' param (id as int)
+            if "current_user" in params:
+                kwargs.setdefault("current_user", int(sub))
+            if payload.get("role") == "mechanic":
+                if "current_mechanic_id" in params:
+                    kwargs.setdefault("current_mechanic_id", int(sub))
+            else:
+                if "current_customer_id" in params:
+                    kwargs.setdefault("current_customer_id", int(sub))
+
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
