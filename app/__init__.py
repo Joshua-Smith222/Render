@@ -4,6 +4,7 @@ from flask import Flask, jsonify, request, redirect
 from flask_swagger_ui import get_swaggerui_blueprint
 
 from .extensions import db, migrate, ma
+from flask_cors import CORS
 
 
 def create_app(config_object=None):
@@ -16,6 +17,8 @@ def create_app(config_object=None):
     """
     app = Flask(__name__)
     app.url_map.strict_slashes = False
+
+    CORS(app, resources={r"/*": {"origins": "*"}}, expose_headers=["Location"], supports_credentials=False)
 
     cfg = config_object or os.getenv("APP_CONFIG") or "app.config.DevelopmentConfig"
 
