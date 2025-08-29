@@ -43,6 +43,7 @@ def create_app(config_object=None):
 
     # --- init extensions ---
     db.init_app(app)
+    from app import models  # noqa: F401 (register models with SQLAlchemy)
     migrate.init_app(app, db)
     ma.init_app(app)
 
