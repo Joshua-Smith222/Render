@@ -34,7 +34,8 @@ def _auto_migrate(app: Flask) -> None:
     On Postgres only:
     - Take an advisory lock so only one worker migrates
     - Try upgrade -> on failure, drop alembic_version and retry
-    - If core tables are missing, create_all() then stamp head
+    - If still failing, STAMP to head as last resort so the app can boot
+    - If no tables exist, create_all() then stamp head
     - Never crash the process; only log errors
     """
     if os.getenv("AUTO_MIGRATE", "1") != "1":
@@ -73,12 +74,24 @@ def _auto_migrate(app: Flask) -> None:
                             app.logger.warning("Could not drop alembic_version: %s", e)
                         ok = _alembic_upgrade_head_safely(app)
 
+                    # Last resort: stamp head so a missing/mismatched revision doesn't block startup
+                    if not ok:
+                        app.logger.warning("Upgrade still failing; stamping alembic head as last resort...")
+                        try:
+                            fm_stamp(revision="head")
+                            app.logger.info("Stamped alembic head as last resort.")
+                            ok = True
+                        except Exception as e:
+                            app.logger.error("Stamp head failed: %s", e)
+
                     # If there still aren’t any core tables, bootstrap schema
-                    core_has_tables = any(
-                        insp.has_table(t)
-                        for t in ("customers", "mechanics", "service_tickets", "vehicles", "inventory")
-                    )
-                    if not core_has_tables:
+                    try:
+                        table_names = set(insp.get_table_names())
+                    except Exception:
+                        table_names = set()
+
+                    expected_some = {"customers", "mechanics", "service_tickets", "vehicles", "inventory"}
+                    if not table_names or not (table_names & expected_some):
                         app.logger.info("No core tables found. Bootstrapping schema via create_all().")
                         try:
                             db.create_all()
