@@ -172,11 +172,26 @@ def create_app(config_object=None):
     else:
         app.config.from_object(cfg)
 
+    # --- ensure DB URL from environment (Render sets DATABASE_URL) ---
+    env_db = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL")
+    if env_db:
+        # Normalize common Render/Heroku schemes
+        if env_db.startswith("postgres://"):
+            env_db = env_db.replace("postgres://", "postgresql+psycopg2://", 1)
+        # Enforce SSL on hosted Postgres
+        if env_db.startswith("postgresql") and "sslmode=" not in env_db:
+            env_db = f"{env_db}{'&' if '?' in env_db else '?'}sslmode=require"
+        app.config["SQLALCHEMY_DATABASE_URI"] = env_db
+
     # Final fallbacks & JWT settings
     app.config.setdefault("SECRET_KEY", os.getenv("SECRET_KEY", "fallback_dev_secret"))
     app.config.setdefault("JWT_SECRET", app.config["SECRET_KEY"])
     app.config.setdefault("JWT_ALGO", "HS256")
     app.config.setdefault("SQLALCHEMY_TRACK_MODIFICATIONS", False)
+
+    # Helpful log to see what DB we ended up with
+    effective_uri = app.config.get("SQLALCHEMY_DATABASE_URI")
+    app.logger.info("Effective SQLALCHEMY_DATABASE_URI: %s", effective_uri)
 
     # ---- Extensions ----
     db.init_app(app)
@@ -215,7 +230,7 @@ def create_app(config_object=None):
 
     # ---- Blueprints (folder names must match case on Linux) ----
     from .blueprints.customers.routes import customers_bp
-    from .blueprints.inventory.routes import inventory_bp      # ensure folder is 'inventory'
+    from .blueprints.inventory.routes import inventory_bp  # ensure folder is 'inventory'
     from .blueprints.mechanics.routes import mechanics_bp
     from .blueprints.service_tickets.routes import tickets_bp
     from .blueprints.vehicles.routes import vehicles_bp
