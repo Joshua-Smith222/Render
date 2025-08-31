@@ -247,6 +247,12 @@ def create_app(config_object=None):
     app.register_blueprint(mechanic_ticket_bp, url_prefix="/mechanic")
     app.register_blueprint(auth_bp)
 
+        # Debug diagnostics (toggle with EXPOSE_DIAG=1)
+    if os.getenv("EXPOSE_DIAG") == "1":
+        from .blueprints.diag.routes import diag_bp
+        app.register_blueprint(diag_bp)
+
+
     # ---- Auto-migrate (Postgres only, non-fatal) ----
     try:
         _auto_migrate(app)
