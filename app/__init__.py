@@ -30,14 +30,6 @@ def _alembic_upgrade_head_safely(app: Flask) -> bool:
 
 
 def _auto_migrate(app: Flask) -> None:
-    """
-    On Postgres only:
-    - Take an advisory lock so only one worker migrates
-    - Try upgrade -> on failure, drop alembic_version and retry
-    - If still failing, STAMP to head as last resort so the app can boot
-    - If no tables exist, create_all() then stamp head
-    - Never crash the process; only log errors
-    """
     if os.getenv("AUTO_MIGRATE", "1") != "1":
         app.logger.info("AUTO_MIGRATE=0; skipping auto-migrate.")
         return
@@ -47,7 +39,6 @@ def _auto_migrate(app: Flask) -> None:
         app.logger.info("Auto-migrate skipped (non-Postgres URI).")
         return
 
-    # All Flask-Migrate and db.* calls require an app context
     with app.app_context():
         try:
             engine = db.engine
@@ -62,6 +53,34 @@ def _auto_migrate(app: Flask) -> None:
                     return
 
                 try:
+                    # --- NEW: handle 'alembic_version' table present but EMPTY ---
+                    try:
+                        has_av = engine.dialect.has_table(conn, "alembic_version")
+                    except Exception:
+                        has_av = False
+
+                    if has_av:
+                        try:
+                            cnt = conn.execute(text("SELECT COUNT(*) FROM alembic_version")).scalar()
+                        except Exception:
+                            cnt = 0  # treat unreadable as empty
+
+                        if cnt == 0:
+                            app.logger.info(
+                                "alembic_version exists but is empty — bootstrapping schema via create_all() and stamping head."
+                            )
+                            try:
+                                db.create_all()
+                                fm_stamp(revision="head")
+                                # refresh inspector view of tables
+                                try:
+                                    insp = inspect(engine)
+                                except Exception:
+                                    pass
+                            except Exception as e:
+                                app.logger.error("Bootstrap (create_all + stamp) failed: %s", e)
+
+                    # ---- Normal upgrade path ----
                     app.logger.info("Running Alembic upgrade (programmatic)...")
                     ok = _alembic_upgrade_head_safely(app)
 
