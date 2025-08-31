@@ -2,7 +2,7 @@
 from flask import Blueprint, request, jsonify
 from ...extensions import db  # not used directly here, but handy if you later log attempts
 from ...models import Customer, Mechanic
-from ...utils.token import generate_token  # expects signature like: generate_token(sub: str, role: str)
+from ...utils.token import encode_token  # expects signature like: generate_token(sub: str, role: str)
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -39,7 +39,7 @@ def customer_login():
     if not cust or not hasattr(cust, "check_password") or not cust.check_password(password):
         return jsonify(error="Invalid credentials"), 401
 
-    token = generate_token(sub=str(cust.customer_id), role="customer")
+    token = encode_token(sub=str(cust.customer_id), role="customer")
     return jsonify(token=token), 200
 
 
@@ -62,5 +62,5 @@ def mechanic_login():
     if not mech or not hasattr(mech, "check_password") or not mech.check_password(password):
         return jsonify(error="Invalid credentials"), 401
 
-    token = generate_token(sub=str(mech.mechanic_id), role="mechanic")
+    token = encode_token(sub=str(mech.mechanic_id), role="mechanic")
     return jsonify(token=token), 200
