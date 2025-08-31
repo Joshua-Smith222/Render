@@ -73,9 +73,10 @@ class ServiceTicket(db.Model):
     date_out    = db.Column(db.DateTime)
     description = db.Column(db.Text)
     status      = db.Column(
-        db.Enum('open','in_progress','closed'),
-        default='open',
-        nullable=False
+        db.Enum('open','in_progress','closed', name='service_ticket_status_enum'),
+
+        nullable=False,
+        server_default='open',
     )
     total_cost  = db.Column(db.Numeric(10,2), default=0.00)
 
