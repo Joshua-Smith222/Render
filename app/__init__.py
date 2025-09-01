@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 import os
 
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, redirect, url_for
 from flask_cors import CORS
 from .extensions import db, migrate, ma
 
@@ -179,5 +179,17 @@ def create_app(overrides: dict | None = None) -> Flask:
                     db.session.commit()
             except Exception as e:
                 app.logger.warning("Test seed skipped: %s", e)
+
+    @app.get("/healthz")
+    def healthz():
+        try:
+            db.session.execute(db.text("SELECT 1"))
+            return jsonify({"status": "ok", "db": "up"}), 200
+        except Exception:
+            return jsonify({"status": "degraded", "db": "down"}), 500
+
+    @app.get("/")
+    def root():
+        return redirect(url_for("flask_swagger_ui.swagger_ui"))
 
     return app
