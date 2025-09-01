@@ -188,7 +188,7 @@ def create_app(overrides: dict | None = None) -> Flask:
         except Exception:
             return jsonify({"status": "degraded", "db": "down"}), 500
 
-    @app.get("/")
+    @app.get("/", methods=["GET", "HEAD"])
     def root():
         return redirect("/docs", code =302)
 
