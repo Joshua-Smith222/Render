@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 import os
 
-from flask import Flask, jsonify, Response, redirect, url_for
+from flask import Flask, jsonify, Response
 from flask_cors import CORS
 from .extensions import db, migrate, ma
 
@@ -199,7 +199,9 @@ def create_app(overrides: dict | None = None) -> Flask:
                     # Do not hard-fail tests on seed; log with full context to help debugging
                     app.logger.warning("Test seed skipped due to error: %s", e)
 
-    @app.get("/healthz")
+    from flask import redirect
+
+    @app.route("/healthz")
     def healthz():
         try:
             db.session.execute(db.text("SELECT 1"))
@@ -207,7 +209,7 @@ def create_app(overrides: dict | None = None) -> Flask:
         except Exception:
             return jsonify({"status": "degraded", "db": "down"}), 500
 
-    @app.get("/", methods=["GET", "HEAD"])
+    @app.route("/", methods=["GET", "HEAD"])
     def root():
         return redirect("/docs", code =302)
 
