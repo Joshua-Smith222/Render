@@ -190,6 +190,6 @@ def create_app(overrides: dict | None = None) -> Flask:
 
     @app.get("/")
     def root():
-        return redirect(url_for("flask_swagger_ui.swagger_ui"))
+        return redirect(url_for("swagger_ui.swagger_ui"))
 
     return app
