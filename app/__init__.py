@@ -150,35 +150,54 @@ def create_app(overrides: dict | None = None) -> Flask:
     def handle_405(e):
         return Response("Method Not Allowed", status=405, headers={"Content-Type": "text/html"})
 
-    # --- Testing DB bootstrap (SQLite) ---
+       # --- Testing DB bootstrap (SQLite) ---
     if app.config.get("TESTING"):
         with app.app_context():
             db.create_all()
-            # Seed a default test customer if not present so /login works
-            try:
-                from app.models import Customer
-                exists = Customer.query.filter_by(email="sam@example.com").first()
-                if not exists:
-                    fields = {}
-                    for key, value in (
-                        ("email", "sam@example.com"),
-                        ("name", "Sam Wrench"),
-                        ("address", ""),
-                        ("phone", "555-1111"),
-                    ):
-                        if hasattr(Customer, key):
-                            fields[key] = value
 
-                    u = Customer(**fields)
-                    if hasattr(u, "set_password") and callable(u.set_password):
-                        u.set_password("secret123")
-                    else:
-                        from werkzeug.security import generate_password_hash
-                        setattr(u, "password_hash", generate_password_hash("secret123"))
-                    db.session.add(u)
-                    db.session.commit()
+            # Seed a known test customer used by unit tests
+            try:
+                from app.models import Customer  # adjust import if your model path differs
             except Exception as e:
-                app.logger.warning("Test seed skipped: %s", e)
+                app.logger.warning("Could not import Customer for test seed: %s", e)
+                Customer = None
+
+            if Customer is not None:
+                try:
+                    # Only create if missing (tests may create/destroy their own data too)
+                    test_email = "sam@example.com"
+                    existing = Customer.query.filter_by(email=test_email).first()
+                    if not existing:
+                        c = Customer(
+                            first_name="Sam",
+                            last_name="Example",
+                            phone="555-1111",
+                            email=test_email,
+                            address="",
+                        )
+
+                        # Set password in whichever way your model supports
+                        if hasattr(c, "set_password"):
+                            c.set_password("password")  # <- tests will log in with this
+                        else:
+                            from werkzeug.security import generate_password_hash
+                            # fall back to direct field if your model uses `password_hash`
+                            if hasattr(c, "password_hash"):
+                                c.password_hash = generate_password_hash("password")
+                            else:
+                                # As a last resort, store on a generic `password` field if it exists
+                                if hasattr(c, "password"):
+                                    c.password = generate_password_hash("password")
+
+                        db.session.add(c)
+                        db.session.commit()
+                        app.logger.info("Seeded test customer %s", test_email)
+                    else:
+                        app.logger.info("Test customer %s already present; seed skipped", test_email)
+
+                except Exception as e:
+                    # Do not hard-fail tests on seed; log with full context to help debugging
+                    app.logger.warning("Test seed skipped due to error: %s", e)
 
     @app.get("/healthz")
     def healthz():
