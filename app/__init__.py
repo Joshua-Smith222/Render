@@ -190,6 +190,6 @@ def create_app(overrides: dict | None = None) -> Flask:
 
     @app.get("/")
     def root():
-        return redirect(url_for("/docs", code =302))
+        return redirect("/docs", code =302)
 
     return app
