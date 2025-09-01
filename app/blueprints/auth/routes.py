@@ -1,66 +1,41 @@
 # app/blueprints/auth/routes.py
 from flask import Blueprint, request, jsonify
-from ...extensions import db  # not used directly here, but handy if you later log attempts
-from ...models import Customer, Mechanic
-from ...utils.token import encode_token  # expects signature like: generate_token(sub: str, role: str)
+from marshmallow import Schema, fields, ValidationError
+from app.extensions import db
+from app.models import Customer
+from app.utils.token import encode_token
 
 auth_bp = Blueprint("auth", __name__)
 
+class LoginSchema(Schema):
+    email = fields.Email(required=True)
+    password = fields.Str(required=True)
 
-def _json():
-    """Safely pull JSON, returning {} if body is empty or invalid JSON."""
-    return request.get_json(silent=True) or {}
+login_schema = LoginSchema()
 
+@auth_bp.post("/login")
+def login():
+    """Simple customer login that returns a JWT."""
+    data = request.get_json(silent=True) or {}
+    try:
+        data = login_schema.load(data)
+    except ValidationError as err:
+        return jsonify({"errors": err.messages}), 400
 
-def _require(fields, data):
-    """Validate required fields present and non-empty."""
-    missing = [f for f in fields if not data.get(f)]
-    if missing:
-        return f"Missing required field(s): {', '.join(missing)}"
-    return None
+    user = Customer.query.filter_by(email=data["email"]).first()
+    if not user:
+        return jsonify({"error": "Invalid credentials"}), 401
 
+    # Support either a check_password method or a stored password_hash
+    if hasattr(user, "check_password") and callable(user.check_password):
+        valid = user.check_password(data["password"])
+    else:
+        from werkzeug.security import check_password_hash
+        valid = check_password_hash(getattr(user, "password_hash", ""), data["password"])
 
-@auth_bp.route("/login", methods=["POST"])
-def customer_login():
-    """
-    Customer login.
-    Body: { "email": "<email>", "password": "<plain text>" }
-    Returns: { "token": "<jwt>" } on success, 401 otherwise.
-    """
-    data = _json()
-    err = _require(["email", "password"], data)
-    if err:
-        return jsonify(error=err), 400
+    if not valid:
+        return jsonify({"error": "Invalid credentials"}), 401
 
-    email = data["email"].strip().lower()
-    password = data["password"]
-
-    cust = Customer.query.filter_by(email=email).first()
-    if not cust or not hasattr(cust, "check_password") or not cust.check_password(password):
-        return jsonify(error="Invalid credentials"), 401
-
-    token = encode_token(sub=str(cust.customer_id), role="customer")
-    return jsonify(token=token), 200
-
-
-@auth_bp.route("/mechanics/login", methods=["POST"])
-def mechanic_login():
-    """
-    Mechanic login.
-    Body: { "email": "<email>", "password": "<plain text>" }
-    Returns: { "token": "<jwt>" } on success, 401 otherwise.
-    """
-    data = _json()
-    err = _require(["email", "password"], data)
-    if err:
-        return jsonify(error=err), 400
-
-    email = data["email"].strip().lower()
-    password = data["password"]
-
-    mech = Mechanic.query.filter_by(email=email).first()
-    if not mech or not hasattr(mech, "check_password") or not mech.check_password(password):
-        return jsonify(error="Invalid credentials"), 401
-
-    token = encode_token(sub=str(mech.mechanic_id), role="mechanic")
-    return jsonify(token=token), 200
+    uid = getattr(user, "customer_id", None) or getattr(user, "id", None) or user.email
+    token = encode_token(uid, role="customer")
+    return jsonify({"token": token}), 200

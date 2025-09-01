@@ -1,65 +1,104 @@
 # app/utils/token.py
+from __future__ import annotations
+
 import os
-from datetime import datetime, timedelta, timezone
 from functools import wraps
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Callable, Any
 
-import jwt  # PyJWT
-from flask import request, jsonify, g
+from flask import request, jsonify, current_app
+from jose import jwt, JWTError
 
-# Use a dedicated JWT secret if present; fall back to Flask SECRET_KEY.
-SECRET_KEY = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY") or "change-me"
-ALGORITHM = os.getenv("JWT_ALG", "HS256")
+ALGO = "HS256"
 
-def encode_token(sub, role=None, expires: timedelta | None = None) -> str:
-    """Create a signed JWT (sub must be stringable)."""
+
+def _secret_key() -> str:
+    return (
+        (current_app.config.get("SECRET_KEY") if current_app else None)
+        or os.getenv("SECRET_KEY")
+        or "dev-secret"
+    )
+
+
+def encode_token(sub: str | int, role: Optional[str] = None, expires_in: int = 60 * 60 * 8) -> str:
     now = datetime.now(timezone.utc)
-    exp = now + (expires or timedelta(hours=8))
     payload = {
         "sub": str(sub),
         "iat": int(now.timestamp()),
-        "exp": int(exp.timestamp()),
+        "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
     }
     if role:
         payload["role"] = role
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, _secret_key(), algorithm=ALGO)
 
-def decode_token(token: str) -> dict:
-    """Decode/verify a JWT, raising jwt.* exceptions on failure."""
-    return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
-def token_required(role: str | None = None):
+# Optional alias if other code imports generate_token
+def generate_token(sub: str | int, role: Optional[str] = None, expires_in: int = 60 * 60 * 8) -> str:
+    return encode_token(sub, role, expires_in)
+
+
+def decode_jwt(token: str) -> dict:
+    return jwt.decode(token, _secret_key(), algorithms=[ALGO])
+
+
+def _extract_bearer_token(auth_header: Optional[str]) -> Optional[str]:
+    if not auth_header:
+        return None
+    h = auth_header.strip()
+    lower = h.lower()
+    while lower.startswith("bearer"):
+        h = h[6:].strip()
+        lower = h.lower()
+    return h or None
+
+
+def token_required(*roles: str) -> Callable[..., Any]:
     """
-    Decorator for protected endpoints.
-    - Checks `Authorization: Bearer <token>` header
-    - Verifies/decodes JWT
-    - Optionally enforces a `role` claim
-    - Stashes info on `flask.g`: g.jwt (dict), g.identity (sub)
+    Validates a Bearer token, enforces roles (if provided), and injects
+    the subject into any of these parameter names your view might use:
+      - current_user_id, user_id
+      - current_customer_id, customer_id
+      - current_mechanic_id, mechanic_id
+      - current_user   <-- added for your routes
+    Also injects 'current_role' if the view accepts it.
     """
-    def decorator(fn):
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            auth = request.headers.get("Authorization", "")
-            if not auth.startswith("Bearer "):
+            token = _extract_bearer_token(request.headers.get("Authorization", ""))
+            if not token:
                 return jsonify({"error": "Missing or invalid Authorization header"}), 401
-            token = auth.split(" ", 1)[1].strip()
-            try:
-                payload = decode_token(token)
-            except jwt.ExpiredSignatureError:
-                return jsonify({"error": "Invalid or expired token"}), 401
-            except jwt.InvalidTokenError:
-                return jsonify({"error": "Invalid or expired token"}), 401
 
-            if role and payload.get("role") != role:
+            try:
+                payload = decode_jwt(token)
+            except JWTError:
+                return jsonify({"error": "Invalid token"}), 401
+
+            role = payload.get("role")
+            if roles and role not in roles:
                 return jsonify({"error": "Forbidden"}), 403
 
-            g.jwt = payload
-            g.identity = payload.get("sub")  # string per JWT spec
+            sub = payload.get("sub")
+
+            # Inject into whatever arg names the view actually declares
+            code_vars = getattr(fn, "__code__", None)
+            varnames = getattr(code_vars, "co_varnames", ()) if code_vars else ()
+
+            for name in (
+                "current_user_id",
+                "user_id",
+                "current_customer_id",
+                "customer_id",
+                "current_mechanic_id",
+                "mechanic_id",
+                "current_user",          # <-- new alias your tests need
+            ):
+                if name in varnames and name not in kwargs:
+                    kwargs[name] = sub
+
+            if "current_role" in varnames and "current_role" not in kwargs:
+                kwargs["current_role"] = role
+
             return fn(*args, **kwargs)
         return wrapper
     return decorator
-
-def get_jwt() -> dict | None:
-    return getattr(g, "jwt", None)
-
-def get_jwt_identity() -> str | None:
-    return getattr(g, "identity", None)
