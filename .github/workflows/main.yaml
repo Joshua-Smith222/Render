@@ -5,33 +5,28 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:
 
-permissions:
-  contents: read
-
+# avoid overlapping deploys from rapid pushes
 concurrency:
-  group: ci-${{ github.ref }}
+  group: render-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      APP_CONFIG: app.config.TestingConfig   # use your TestingConfig in CI
-      DATABASE_URL: sqlite://               # keep tests on SQLite
-      SECRET_KEY: test-secret
+      # Make the app use the lightweight test DB/config
+      APP_CONFIG: app.config.TestingConfig
       FLASK_ENV: testing
-      AUTO_MIGRATE: "0"                     # never auto-migrate during tests
+      SECRET_KEY: test-secret
+      SQLALCHEMY_DATABASE_URI: sqlite:///test.db   # ensure SQLAlchemy always has a URI
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -39,21 +34,39 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run unit tests
-        run: python -m unittest discover tests
+        run: |
+          python -m unittest discover tests -v
 
   deploy:
-    # only deploy on pushes to main, and only if tests passed
+    # only deploy on pushes to main (not PRs), and only if tests passed
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Render deploy
+      - name: Trigger Render Deploy
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           SERVICE_ID: ${{ secrets.SERVICE_ID }}
         run: |
-          curl -fsS -X POST \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "accept: application/json" \
-            -H "content-type: application/json" \
-            "https://api.render.com/v1/services/${SERVICE_ID}/deploys"
+          set -e
+          if [ -z "$RENDER_API_KEY" ] || [ -z "$SERVICE_ID" ]; then
+            echo "Missing RENDER_API_KEY or SERVICE_ID secret"
+            exit 1
+          fi
+
+          http_code=$(curl -sS -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -o response.json -w "%{http_code}" \
+            "https://api.render.com/v1/services/$SERVICE_ID/deploys")
+
+          echo "Render HTTP: $http_code"
+          echo "Response JSON:"
+          cat response.json || true
+
+          # treat only 200/201/202 as success
+          if [ "$http_code" -ne 200 ] && [ "$http_code" -ne 201 ] && [ "$http_code" -ne 202 ]; then
+            echo "Deploy API call failed"
+            exit 1
+          fi
